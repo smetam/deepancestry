@@ -4,11 +4,11 @@ import random
 
 
 class Population:
-    populations = ('EAS', 'EUR', 'AFR', 'AMR', 'SAS')
-    subpopulations = ()
+    superpopulations = ('EAS', 'EUR', 'AFR', 'AMR', 'SAS')
+    populations = ()
 
     def __init__(self, populations=None):
-        self.all = populations or self.populations
+        self.all = populations or self.superpopulations
 
     def __len__(self):
         return len(self.all)
