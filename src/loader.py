@@ -15,6 +15,8 @@ class Loader:
     def __init__(self, base_url=None, base_path=None):
         self.base_url = base_url or 'ftp.1000genomes.ebi.ac.uk/vol1/ftp/'
         self.base_path = base_path or BASE_PATH
+        self.login = None
+        self.password = None
 
     def local_path(self, filepath):
         filename = filepath.split('/')[-1]
@@ -25,9 +27,14 @@ class Loader:
             with open(self.local_path(filepath), 'wb') as f:
                 shutil.copyfileobj(remote, f)
 
+    def set_credentials(self, login, password):
+        self.login = login
+        self.password = password
+
     @contextmanager
     def ftp_keeper(self, url):
         ftp = FTP(url)
+        ftp.login(user=self.login or '', passwd=self.password or '')
         yield ftp
         ftp.quit()
 
