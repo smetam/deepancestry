@@ -1,11 +1,25 @@
 from functools import lru_cache
 from itertools import combinations
 import random
+import pathlib
+
+
+BASE_PATH = pathlib.Path(__file__).parents[1]
 
 
 class Population:
     superpopulations = ('EAS', 'EUR', 'AFR', 'AMR', 'SAS')
-    populations = ()
+    populations = [
+        'GBR', 'FIN', 'CHS', 'PUR', 'CDX', 'CLM', 'IBS', 'PEL', 'PJL', 'KHV', 'ACB', 'GWD', 'ESN',
+        'BEB', 'MSL', 'STU', 'ITU', 'CEU', 'YRI', 'CHB', 'JPT', 'LWK', 'ASW', 'MXL', 'TSI', 'GIH'
+    ]
+    population_map = {
+        'EUR': ['GBR', 'FIN', 'IBS', 'CEU', 'TSI'],
+        'EAS': ['CHS', 'CDX', 'KHV', 'CHB', 'JPT'],
+        'AMR': ['PUR', 'CLM', 'PEL', 'MXL'],
+        'SAS': ['PJL', 'BEB', 'STU', 'ITU', 'GIH'],
+        'AFR': ['ACB', 'GWD', 'ESN', 'MSL', 'YRI', 'LWK', 'ASW']
+    }
 
     def __init__(self, populations=None):
         self.all = populations or self.superpopulations
