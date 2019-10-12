@@ -1,5 +1,7 @@
 import pathlib
 import vcf
+import sys
+import logging
 import subprocess
 import pandas as pd
 
@@ -12,8 +14,12 @@ from src.populations import Population
 
 BASE_PATH = pathlib.Path(__file__).parents[1]
 
+logger = logging.getLogger(__name__)
+logger.setLevel('INFO')
+logger.addHandler(logging.StreamHandler(sys.stdout))
 
-class FrequencyCalculator:
+
+class InformativenessCalculator:
 
     def __init__(self, chromosome, start, end, populations=None):
         self.populations = populations or Population().pair
@@ -46,20 +52,20 @@ class FrequencyCalculator:
     def _pop_segment_path(self, pop):
         return self._path(f'{pop}.chr{self.chromosome}.{self.start}-{self.end}.vcf.gz')
 
-    def _check_local(self):
-        # TODO: implement this
-        return False
+    @staticmethod
+    def _check_local(path):
+        return pathlib.Path(path).exists()
 
     def fetch(self):
-        if self._check_local():
-            return
         file = f'{self.base_url}{self.pattern.format(self.chromosome)}'
         query = f'{self.chromosome}:{self.start}-{self.end}'
         local_filename = self._segment_path()
 
+        logger.info(f'Fetching from {file}')
         load_command = ' '.join(['tabix', '-h', file, query, '|', 'bgzip', '-c', '>', local_filename])
         subprocess.call(load_command, shell=True, stdout=subprocess.PIPE)
 
+        logger.info(f'Indexing {local_filename}')
         index_command = ' '.join(['tabix', '-p', 'vcf', local_filename])
         subprocess.call(index_command, shell=True, stdout=subprocess.PIPE)
 
@@ -67,16 +73,19 @@ class FrequencyCalculator:
         pass
 
     def samples(self, pop):
+        logger.info(f'Retrieving samples for {pop} to {self._samples_path(pop)}')
         command = ' '.join(['grep', pop, self._path('samples.tsv'), '|', 'cut', '-f1', '>', self._samples_path(pop)])
         subprocess.call(command, shell=True, stdout=subprocess.PIPE)
 
     def subset(self, pop):
         local_filename = self._segment_path()
+
+        logger.info(f'Preparing subset for population {pop} at {self._pop_segment_path(pop)}')
         command = ' '.join(['vcf-subset', '-c', self._samples_path(pop), local_filename, '|', 'fill-an-ac',
                            '|', 'bgzip', '-c', '>',  self._pop_segment_path(pop)])
         subprocess.call(command, shell=True)
 
-    def calculate_frequency(self, pop):
+    def calculate_multiallelic_frequency(self, pop):
         reader = vcf.Reader(filename=self._pop_segment_path(pop))
         af = pd.Series()
         for record in reader:
@@ -85,20 +94,44 @@ class FrequencyCalculator:
             af.loc[record.POS] = [ac / allele_num for ac in allele_counts]
         return af
 
-    def execute(self):
-        self.fetch()
-        population_frequencies = pd.DataFrame(columns=[pop for pop in self.populations])
+    def calculate_frequency(self, pop):
+        logger.info(f'Calculating frequencies for {pop}')
+        reader = vcf.Reader(filename=self._pop_segment_path(pop))
+        ref, alt = f'{pop}_REF', f'{pop}_ALT'
+        frequency_df = pd.DataFrame(columns=[ref, alt])
+        for record in reader:
+            if len(record.ALT) == 1 and record.is_snp:
+                allele_num = record.INFO['AN']
+                frequency_df.loc[record.POS] = (allele_num - record.INFO['AC'][0]) / allele_num, record.INFO['AC'][0] / allele_num
+        return frequency_df
+
+    def alleles(self):
+        reader = vcf.Reader(filename=self._segment_path())
+        alleles = pd.DataFrame(columns=['REF', 'ALT'])
+        logger.info('Filtering biallelic and snp records')
+        for record in reader:
+            if len(record.ALT) == 1 and record.is_snp:
+                alleles.loc[record.POS] = record.REF, record.ALT[0]
+        return alleles
+
+    def calculate_frequencies(self):
+        if not self._check_local(self._segment_path()):
+            logger.info(f'Could not find local segment at path: {self._segment_path()}')
+            self.fetch()
+        population_frequencies = self.alleles()
         for pop in self.populations:
-            self.samples(pop)
-            self.subset(pop)
-            population_frequencies[pop] = self.calculate_frequency(pop)
+            if not self._check_local(self._pop_segment_path(pop)):
+                logger.info(f'Could not find local segment for {pop} at path: {self._pop_segment_path(pop)}')
+                self.samples(pop)
+                self.subset(pop)
+            population_frequencies = population_frequencies.join(self.calculate_frequency(pop))
         return population_frequencies
 
 
-def i4a(record, populations=None):
+def i4a(record, frequency_df, populations=None):
     """Calculate informativeness for assignment"""
     alleles = [record.REF] + record.ALT
-    populations = populations or Population.superpopulations
+    populations = populations or list(frequency_df)
     s = 0
     N = len(alleles)
     K = len(populations)
@@ -131,5 +164,6 @@ def get_best_markers(records, populations, capacity=10):
 
 
 if __name__ == '__main__':
-    fc = FrequencyCalculator(1, 10000, 50000, populations=('GBR', 'FIN'))
-    print(fc.execute())
+    fc = InformativenessCalculator(1, 1, 100000, populations=('GBR', 'FIN'))
+    df = fc.calculate_frequencies()
+    print(df)
