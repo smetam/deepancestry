@@ -1,6 +1,7 @@
 import pathlib
 import vcf
 import subprocess
+import pandas as pd
 
 from queue import PriorityQueue
 from operator import itemgetter
@@ -77,21 +78,21 @@ class FrequencyCalculator:
 
     def calculate_frequency(self, pop):
         reader = vcf.Reader(filename=self._pop_segment_path(pop))
-        dict = {}
+        af = pd.Series()
         for record in reader:
             allele_num = record.INFO['AN']
             allele_counts = [allele_num - sum(record.INFO['AC'])] + record.INFO['AC']
-            dict[record.POS] = [ac / allele_num for ac in allele_counts]
-        return dict
+            af.loc[record.POS] = [ac / allele_num for ac in allele_counts]
+        return af
 
     def execute(self):
         self.fetch()
-        population_frequencies = {}
+        population_frequencies = pd.DataFrame(columns=[pop for pop in self.populations])
         for pop in self.populations:
             self.samples(pop)
             self.subset(pop)
             population_frequencies[pop] = self.calculate_frequency(pop)
-        print(population_frequencies)
+        return population_frequencies
 
 
 def i4a(record, populations=None):
@@ -129,3 +130,6 @@ def get_best_markers(records, populations, capacity=10):
     return [q.get() for _ in range(q.qsize())]
 
 
+if __name__ == '__main__':
+    fc = FrequencyCalculator(1, 10000, 50000, populations=('GBR', 'FIN'))
+    print(fc.execute())
