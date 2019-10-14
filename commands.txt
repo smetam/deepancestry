@@ -1,0 +1,19 @@
+
+# Load slice from vcf file
+# Load chromosome 1 positions from 10000 to 50000 for release 20130502
+tabix -h ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz 1:10000-50000 | bgzip -c > ALL.chr1.10_50.vcf.gz
+
+# list all samples for population CEU
+# the list of all samples can be downloaded from ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/integrated_call_samples_v3.20130502.ALL.panel
+grep CEU integrated_call_samples_v3.20130502.ALL.panel | cut -f1 > CEU.samples.list
+
+# calculate AN, AC for a population CEU
+vcf-subset -c CEU.samples.list ALL.chr1.10_50.vcf.gz | fill-an-ac | bgzip -c > CEU.chr1.10_50.vcf.gz
+
+# write allele frequencies to chr2_analysis
+vcftools --gzvcf FIN.chr2.5000-100000.vcf.gz --freq --chr 2 --remove-indels --out chr2_analysis
+
+# compress and index vcf
+bgzip -c file.vcf > file.vcf.gz
+tabix -p vcf file.vcf.gz
+
