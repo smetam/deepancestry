@@ -17,3 +17,6 @@ vcftools --gzvcf FIN.chr2.5000-100000.vcf.gz --freq --chr 2 --remove-indels --ou
 bgzip -c file.vcf > file.vcf.gz
 tabix -p vcf file.vcf.gz
 
+# make vcf data for one sample
+bcftools view -s HG00372 -m2 -M2 -Oz -o HG00372.vcf data/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz 1:10000000-11000000
+

@@ -1,2 +1,3 @@
 pyvcf
 pandas
+scikit-allel
