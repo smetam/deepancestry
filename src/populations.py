@@ -22,7 +22,7 @@ class Population:
     }
 
     def __init__(self, populations=None):
-        self.all = populations or self.superpopulations
+        self.all = populations or self.populations
 
     def __len__(self):
         return len(self.all)
