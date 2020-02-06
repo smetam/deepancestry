@@ -15,7 +15,7 @@ from functools import lru_cache, wraps
 from queue import PriorityQueue
 from operator import itemgetter
 from random import choices
-from math import log
+from math import log, factorial as fac
 
 
 BASE_PATH = pathlib.Path(__file__).absolute().parents[1]
@@ -103,10 +103,19 @@ class BaseAnalyser:
 
 class PartialInfoCalc(BaseAnalyser):
 
-    def __init__(self, chromosome=1, n_markers=15):
+    def __init__(self, chromosome=1, n_markers=15, part_size=1):
         super().__init__()
         self.chr = chromosome
         self.n = n_markers
+        self.part_size = part_size
+        self._init_dir()
+
+    def _init_dir(self):
+        freq_path = self.base_path / 'data' / f'part_size{self.part_size}' / 'frequencies'
+        marker_path = self.base_path / 'data' / f'part_size{self.part_size}' / 'informativeness'
+
+        for p in (freq_path, marker_path):
+            p.mkdir(parents=True, exist_ok=True)
 
     @property
     @lru_cache(1)
@@ -124,14 +133,11 @@ class PartialInfoCalc(BaseAnalyser):
         return str(self.base_path / 'data' / 'chromosomes' / chr_filename)
 
     def _freq_path(self, part):
-        return str(self.base_path / 'data' / 'frequencies' / f'ALL.frq.part{part}')
+        return str(self.base_path / 'data' / f'part_size{self.part_size}' / 'frequencies' / f'ALL.frq.part{part}')
 
     def _query(self, part):
-
-        # start = part * 10 ** 5
-        # end = (part + 1) * 10 ** 5
-        # return f'{self.chr}:{start}-{end}'
-        start, end = self.segments[10 * part], self.segments[10 * part + 10]
+        start = self.segments[self.part_size * part]
+        end = self.segments[self.part_size * (part + 1)]
         return f'{self.chr}:{start}-{end}'
 
     def _calculate_freq(self, part: int, with_ref=False):
@@ -165,9 +171,12 @@ class PartialInfoCalc(BaseAnalyser):
             self._calculate_freq(part)
         return pd.read_csv(self._freq_path(part), index_col=0)
 
+    def _sample_genotype_path(self, sample, part):
+        return str(self.base_path / 'data' / f'part_size{self.part_size}' / 'samples' / f'{sample}.part{part}.vcf.gz')
+
     def sample_genotype_array(self, sample, part):
         """Get a genotype array for the specified individual"""
-        file = str(self.base_path / 'data' / 'samples' / f'{sample}.part{part}.vcf.gz')
+        file = self._sample_genotype_path(sample, part)
 
         if not self._check_local(file):
             cmd = f'bcftools view -s {sample} -v snps -m2 -M2 -Oz -o {file} {self._chr_path} {self._query(part)}'
@@ -213,7 +222,8 @@ class PartialInfoCalc(BaseAnalyser):
                 logger.info(f'Row #{pos} done, current duration: {time.monotonic() - start_time}')
 
     def _markers_path(self, part):
-        return str(self.base_path / 'data' / 'informativeness' / f'markers.part{part}.csv')
+        return str(self.base_path / 'data' / f'part_size{self.part_size}'
+                   / 'informativeness' / f'markers.part{part}.csv')
 
     def get_best_markers(self, p1, p2):
         """Find the best markers based on probabilities of REF allele for the pair of populations"""
@@ -316,27 +326,31 @@ class PartialInfoCalc(BaseAnalyser):
 
 class ContinentalFeatureCalc(PartialInfoCalc):
 
-    def __init__(self, chromosome=1, n_markers=15, populations=None):
-        super().__init__()
-        self.chr = chromosome
-        self.n = n_markers
-        self.populations = sorted(populations or ['CEU', 'CHS', 'PEL', 'BEB', 'ACB'])
+    def __init__(self, chromosome=1, n_markers=7, populations=None, part_size=1):
+        super().__init__(chromosome=chromosome, n_markers=n_markers, part_size=part_size)
+        self.subset = sorted(populations or ['CEU', 'CDX', 'CLM', 'GIH', 'MSL'])
 
-    def _query(self, part):
-        start, end = self.segments[20 * part], self.segments[20 * (part + 1)]
-        return f'{self.chr}:{start}-{end}'
+    def subset_samples_df(self, pop='ALL'):
+        header = 0 if pop == 'ALL' else None
+        index = 'sample' if pop == 'ALL' else 0
+        df = pd.read_csv(self._samples_path(pop), sep='\t', header=header, index_col=index)
+        return df[df.iloc[:, 0].isin(self.subset)]
+
+    def subset_samples(self, pop='ALL'):
+        df = self.subset_samples_df(pop)
+        return df.index.values
 
     def generate_features_as_csv(self, part):
         t = time.monotonic()
         logger.info(f'Generating features for populations: {self.populations}.\n'
                     f'Start time {t}')
         markers_df = self.markers_df(part)
-        pairs = list(combinations(self.populations, 2))
+        pairs = list(combinations(self.subset, 2))
         freq = self.frequency(part)
-        out_file = f'features_{self._query(part)}.csv'
+        out_file = f'features_part{part}.csv'
         with open(out_file, 'w') as f:
             f.write(f'{make_header(pairs)}\n')
-            for sample in self.samples():
+            for sample in self.subset_samples():
                 logger.info(f'Running feature calculator for {sample}')
                 genotype = self.sample_genotype_array(sample, part)
                 real = self.real_population(sample)
@@ -366,19 +380,84 @@ class ContinentalFeatureCalc(PartialInfoCalc):
         logger.info(f'Done! Results are avaliable at {out_file}\n')
 
 
+class LargeRegionFeatureCalc(ContinentalFeatureCalc):
+
+    def _init_dir(self):
+        freq_path = self.base_path / 'data' / 'ld50' / 'frequencies'
+        marker_path = self.base_path / 'data' / f'ld50' / 'informativeness'
+        genotype_path = self.base_path / 'data' / f'ld50' / 'genotypes'
+
+        for p in (freq_path, marker_path, genotype_path):
+            p.mkdir(parents=True, exist_ok=True)
+
+    def _freq_path(self, part):
+        return str(self.base_path / 'data' / 'ld50' / 'frequencies' / f'ALL.frq.part{part}')
+
+    def _markers_path(self, part):
+        return str(self.base_path / 'data' / 'ld50' / 'informativeness' / f'markers.part{part}.csv')
+
+    def _sample_genotype_path(self, sample, part):
+        return str(self.base_path / 'data' / 'ld50' / 'genotypes' / f'{sample}.part{part}.vcf.gz')
+
+    @property
+    @lru_cache(1)
+    def segments(self):
+        segment_path = str(BASE_PATH / 'data' / 'plink' / 'genetic_map_chr1_003.txt')
+        logger.info(f'Getting segments for chromosome{self.chr} from {segment_path}')
+        segment_df = pd.read_csv(segment_path)
+        segments = [int(x) for x in segment_df['position']]
+        return segments
+
+    def find_separable_populations(self, part, num=5):
+        names = ['POP1', 'POP2'] + " ".join([f'SCORE{i} MARKER{i}' for i in range(self.n)]).split()
+        df = pd.read_csv(self._markers_path(part), header=None, index_col=[0, 1], names=names, sep=' ')
+        df['TOTAL_SCORE'] = sum(df[f'SCORE{i}'] for i in range(self.n))
+
+        df = df.sort_values(by=['TOTAL_SCORE'], ascending=False)
+        df.to_csv(f'pop_scores_part{part}', index=False)
+
+        logger.info(f'Choosing best 5 populations from {fac(26) / fac(num) / fac(26 - num)} for part {part}')
+        best = []
+        best_score = 0
+        for pops in combinations(self.populations, num):
+            score = 0
+            for pop1, pop2 in combinations(pops, 2):
+                score += df.xs([pop1, pop2])['TOTAL_SCORE']
+            if score > best_score:
+                best = pops
+                best_score = score
+        return best
+
+    def set_subset(self, subset):
+        self.subset = subset
+
+
+def main(args):
+    pic = LargeRegionFeatureCalc(
+        chromosome=args.chromosome,
+        populations=sorted(POPULATIONS),
+        n_markers=args.n
+    )
+    for part in [102, 207, 312, 413]:
+        pops = pic.find_separable_populations(part, 3)
+        print(part)
+        print(pops)
+        pic.set_subset(pops)
+        pic.generate_features_as_csv(part)
+
+
 if __name__ == '__main__':
 
-    pic = ContinentalFeatureCalc()
-    pic.generate_features_as_csv(101)
+    parser = argparse.ArgumentParser(description='Calculate best markers and their informativeness for specified '
+                                                 'segment of the chromosome')
 
-    # parser = argparse.ArgumentParser(description='Calculate best markers and their informativeness for specified '
-    #                                              'segment of the chromosome')
-    #
-    # parser.add_argument('population codes', metavar='pop', type=str, nargs='*', default=('GBR', 'FIN'),
-    #                     help='Populations for the informativeness calculation')
-    # parser.add_argument('-n', action='store', type=int, default=10, help='number of markers')
-    # parser.add_argument('-c', '--chromosome', action='store', type=int, default=1, help='Chromosome number')
-    # parser.add_argument('-s', '--start', action='store', type=int, default=1, help='Starting position')
-    # parser.add_argument('-e', '--end', action='store', type=int, default=100000, help='Ending position')
+    parser.add_argument('population codes', metavar='pop', type=str, nargs='*', default=('GBR', 'FIN'),
+                        help='Populations for the informativeness calculation')
+    parser.add_argument('-n', action='store', type=int, default=10, help='number of markers')
+    parser.add_argument('-c', '--chromosome', action='store', type=int, default=1, help='Chromosome number')
+    parser.add_argument('-s', '--start', action='store', type=int, default=1, help='Starting position')
+    parser.add_argument('-e', '--end', action='store', type=int, default=1000000, help='Ending position')
 
-    # args = parser.parse_args()
+    args = parser.parse_args()
+
+    main(args)
