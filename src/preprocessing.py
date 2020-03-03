@@ -31,6 +31,16 @@ POPULATIONS = [
 ]
 
 
+def run_time_logging(func):
+    @wraps(func)
+    def inner(*args, **kwargs):
+        t = time.monotonic()
+        result = func(*args, **kwargs)
+        logger.info(f'Func {func.__name__} done in {time.monotonic() - t} seconds.')
+        return result
+    return inner
+
+
 def xlogx(x):
     return xlogy(x, x)
 
@@ -138,25 +148,22 @@ class PartialInfoCalc(BaseAnalyser):
     def _query(self, part):
         start = self.segments[part]
         end = self.segments[part + 1]
-        print(start, end)
         return f'chr{self.chr}:{start}-{end}'
 
+    @run_time_logging
     def _calculate_frequency(self, part):
         """Calculate frequencies for biallelic SNPs on the specified part of the genome."""
-        start_time = time.monotonic()
         cmd = f'tabix -h {self._chr_path} {self._query(part)} ' \
             f'| bcftools +fill-tags -Ou -- -S {self._groups_path} -t AF' \
             f'| bcftools query -f "{self._freq_query}" > {self._freq_path(part)}'
-        print(cmd)
         subprocess.call(cmd, shell=True, stdout=subprocess.PIPE)
-        logger.info(f'Frequency calculation for {self._query(part)} done in {time.monotonic() - start_time} seconds.'
-                    f'Results are available at {self._freq_path(part)}')
 
     def frequency(self, part):
         if not self._check_local(self._freq_path(part)):
             self._calculate_frequency(part)
         return pd.read_csv(self._freq_path(part), sep=' ', names=self._freq_names, index_col=0)
 
+    @run_time_logging
     def _calculate_informativeness(self, part):
         freq_df = self.frequency(part)
         informativeness = {}
@@ -172,39 +179,22 @@ class PartialInfoCalc(BaseAnalyser):
             self._calculate_informativeness(part)
         return pd.read_csv(self._inf_path(part), index_col=0)
 
+    @run_time_logging
+    def _calculate_markers(self, part):
+        inf_df = self.informativeness(part)
+        with open(self._markers_path(part), 'w') as f:
+            for pop_left, pop_right in self.pairs:
+                col_name = '_'.join((pop_left, pop_right))
+                best_markers = inf_df[col_name].nlargest(n=self.n)
+                idx_inf_pairs = zip(best_markers.index.values, best_markers.values)
+                s = col_name + ',' + ','.join([str(item) for sublist in idx_inf_pairs for item in sublist])
+                f.write(s + '\n')
 
-    # def get_best_markers(self, p1, p2):
-    #     """Find the best markers based on probabilities of REF allele for the pair of populations"""
-    #     q = PriorityQueue()
-    #     for a, b, pos in zip(p1, p2, p1.index.values):
-    #         if a != b:
-    #             if q.qsize() < self.n:
-    #                 q.put((i4a(a, b), pos))
-    #             else:
-    #                 last = q.get()
-    #                 q.put(max((i4a(a, b), pos), last, key=itemgetter(0)))
-    #     return reversed([q.get() for _ in range(q.qsize())])
-    #
-    # def _calculate_markers(self, part):
-    #     """
-    #     Write best markers with informativeness to a file.
-    #     The output file has info about all pairs of populations.
-    #     """
-    #     freq = self.frequency(part)
-    #     pairs = list(combinations(self.populations, 2))
-    #     with open(self._markers_path(part), 'w') as f:
-    #         for first, second in pairs:
-    #             f.write(' '.join((first, second, '')))
-    #             f.write(' '.join(f'{i} {m}' for i, m in self.get_best_markers(freq[first], freq[second])) + '\n')
-    #
-    #             logger.info(f'{(first, second)} done.')
-    #
-    # def markers_df(self, part):
-    #     if not self._check_local(self._markers_path(part)):
-    #         self._calculate_markers(part)
-    #     header = sum([[f'INF{i}', f'MARKER{i}'] for i in range(self.n)], [])
-    #     return pd.read_csv(self._markers_path(part), index_col=(0, 1), names=header, sep=' ')
-    #
+    def markers(self, part):
+        if not self._check_local(self._markers_path(part)):
+            self._calculate_markers(part)
+        return pd.read_csv(self._markers_path(part), header=None, index_col=0)
+
     # def sample_genotype_array(self, sample, part):
     #     """Get a genotype array for the specified individual"""
     #     file = self._sample_genotype_path(sample, part)
@@ -279,4 +269,4 @@ if __name__ == '__main__':
     pic = PartialInfoCalc(chromosome=18, recombination='recombination_spots_18.tsv',
                           n_markers=15, directory='chromosome18_data')
 
-    print(pic._calculate_informativeness(0))
+    print(pic.markers(0))
