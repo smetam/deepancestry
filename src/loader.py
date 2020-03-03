@@ -1,6 +1,9 @@
 """
 Basic module for loading 1000 genomes data
 """
+# TODO: use progressbar
+# TODO: enhance logging
+# TODO: add loading from custom ftp
 import sys
 import ftplib
 import shutil
@@ -19,8 +22,6 @@ logger.addHandler(logging.StreamHandler(sys.stdout))
 BASE_PATH = pathlib.Path(__file__).parents[1]
 
 
-# TODO: enhance logging
-# TODO: add loading from custom ftp
 class Loader:
     def __init__(self, chromosome, start, end, out_dir):
         self.start = start
@@ -45,7 +46,7 @@ class Loader:
 
     @property
     def query(self):
-        return f'{self.chromosome}:{self.start}-{self.end}'
+        return f'chr{self.chromosome}:{self.start}-{self.end}'
 
     @property
     def ftp_path(self):

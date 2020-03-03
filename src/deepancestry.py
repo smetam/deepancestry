@@ -38,7 +38,7 @@ if __name__ == '__main__':
     )
 
     parser_f = subparsers.add_parser('fetch', help="Load the required chromosome from 1000 genomes project")
-    parser_f.add_argument('-c', '--chromosome', action='store', type=int, default=18, help='Chromosome number')
+    parser_f.add_argument('-c', '--chromosome', action='store', type=str, default='18', help='Chromosome number or X')
     parser_f.add_argument('-s', '--start', action='store', type=int, default=None, help='Start position of chromosome')
     parser_f.add_argument('-e', '--end', action='store', type=int, default=None, help='End position of chromosome')
     parser_f.add_argument('--dir', action='store', type=str, default=None, help='Directory to store chromosome')
