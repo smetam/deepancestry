@@ -1,66 +1,86 @@
 """
 Basic module for loading 1000 genomes data
 """
+import ftplib
 import shutil
 import pathlib
 import subprocess
 import urllib.request as request
 
-from contextlib import contextmanager, closing
-from ftplib import FTP
+from contextlib import closing
 
 
 BASE_PATH = pathlib.Path(__file__).parents[1]
 
 
+# TODO: add logging
 class Loader:
+    def __init__(self, chromosome, start, end, out_dir):
+        self.start = start
+        self.end = end
+        self.chromosome = chromosome
+        self._ensure_dir(out_dir)
+        self.server = 'ftp.1000genomes.ebi.ac.uk'
+        self.collection = 'vol1/ftp/data_collections/1000_genomes_project/release/20181203_biallelic_SNV/'
+        self.chr_file = f'ALL.chr{chromosome}.shapeit2_integrated_v1a.GRCh38.20181129.phased.vcf.gz'
 
-    def __init__(self, base_url=None, base_path=None):
-        self.base_url = base_url or 'ftp.1000genomes.ebi.ac.uk/vol1/ftp/'
-        self.base_path = base_path or BASE_PATH
+    def _ensure_dir(self, out_dir):
+        self.out_dir = out_dir or f'chr{self.chromosome}_data'
 
-        self._set_credentials()
-        self._configure()
+        path = pathlib.Path(BASE_PATH / self.out_dir)
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
 
-    def _configure(self,  collection_path=None, file_pattern=None):
-        self.collection_path = self.base_url + (collection_path or 'release/20130502/')
+    @property
+    def slice_mode(self):
+        return self.start and self.end
 
-        default_pattern = 'ALL.chr{chrom}.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz'
-        self.file_pattern = file_pattern or default_pattern
+    @property
+    def query(self):
+        return f'{self.chromosome}:{self.start}-{self.end}'
 
-    def local_path(self, filepath):
-        filename = filepath.split('/')[-1]
-        return str(self.base_path / 'data' / filename)
+    @property
+    def ftp_path(self):
+        return f'ftp://{self.server}/{self.collection}{self.chr_file}'
 
-    def load(self, filepath):
-        with closing(request.urlopen(self.base_url + filepath)) as remote:
-            with open(self.local_path(filepath), 'wb') as f:
-                shutil.copyfileobj(remote, f)
+    @property
+    def local_filename(self):
+        if self.slice_mode:
+            return f'chr{self.chromosome}.{self.start}_{self.end}.vcf.gz'
+        return f'chr{self.chromosome}_full.vcf.gz'
 
-    def _set_credentials(self, login=None, password=None):
-        self.login = login
-        self.password = password
+    @property
+    def local_filepath(self):
 
-    @contextmanager
-    def ftp_keeper(self, url):
-        ftp = FTP(url)
-        ftp.login(user=self.login or '', passwd=self.password or '')
-        yield ftp
+        return str(BASE_PATH / self.out_dir / self.local_filename)
+
+    def _fetch(self):
+        ftp = ftplib.FTP(self.server)
+        ftp.login()
+
+        ftp.cwd(self.collection)
+        ftp.retrlines('LIST')
+
+        ftp.retrbinary("RETR {}".format(self.chr_file), open(self.local_filepath, 'wb').write)
         ftp.quit()
 
-    def ftp_load(self, filepath):
-        with self.ftp_keeper(self.base_url) as ftp, open(self.local_path(filepath), 'wb') as f:
-            ftp.retrbinary('RETR ' + filepath, f.write)
-
-    def slice(self, chrom, start, end):
-        file = f'ftp://{self.collection_path}{self.file_pattern.format(chrom=chrom)}'
-        query = f'{chrom}:{start}-{end}'
-        local_filename = f'chr{chrom}.{start}_{end}.vcf.gz'
-
-        load_command = ' '.join(['tabix', '-h', file, query, '|', 'bgzip', '-c', '>', local_filename])
+    def _slice(self):
+        load_command = ' '.join([f'mkdir {self.out_dir} && cd {self.out_dir} &&', 'tabix', '-h',
+                                 self.ftp_path, self.query, '|', 'bgzip', '-c', '>', self.local_filename])
         subprocess.call(load_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
-        index_command = ' '.join(['tabix', '-p', 'vcf', local_filename])
+        index_command = ' '.join([f'cd {self.out_dir} &&', 'tabix', '-p', 'vcf', self.local_filename])
         subprocess.call(index_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    def _load(self):
+        with closing(request.urlopen(self.ftp_path)) as remote:
+            with open(self.local_filepath, 'wb') as f:
+                shutil.copyfileobj(remote, f)
+
+    def fetch(self):
+        if self.slice_mode:
+            self._slice()
+        else:
+            self._fetch()
 
 
