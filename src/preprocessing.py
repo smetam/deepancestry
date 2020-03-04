@@ -1,10 +1,8 @@
 import sys
 import time
-import allel
 import pathlib
 import logging
 import argparse
-import tempfile
 import subprocess
 import pandas as pd
 import numpy as np
@@ -12,10 +10,7 @@ import numpy as np
 from scipy.special import xlogy
 from itertools import combinations
 from functools import lru_cache, wraps
-from queue import PriorityQueue
-from operator import itemgetter
 from random import choices
-from math import log, factorial as fac
 
 
 BASE_PATH = pathlib.Path(__file__).absolute().parents[1]
@@ -49,7 +44,7 @@ def i4a(p_left, p_right):
     """Informativeness for assignment for 2 populations (Rosenberg et al.)"""
     p_avg = (p_left + p_right) / 2
     informativeness = -xlogx(p_avg) - xlogx(1 - p_avg) \
-          + (xlogx(p_left) + xlogx(p_right) + xlogx(1 - p_left) + xlogx(1 - p_right)) / 2
+        + (xlogx(p_left) + xlogx(p_right) + xlogx(1 - p_left) + xlogx(1 - p_right)) / 2
     return informativeness
 
 
@@ -111,12 +106,8 @@ class PartialInfoCalc(BaseAnalyser):
         self._rec_path = str(self.data_path / recombination)
         self._groups_path = str(self.data_path / 'groups.tsv')
 
-        freq_path = self.data_path / 'frequencies'
-        marker_path = self.data_path / 'informativeness'
-        genotype_path = self.data_path / 'genotypes'
-
-        for p in (freq_path, marker_path, genotype_path):
-            p.mkdir(parents=True, exist_ok=True)
+        for folder in ('frequencies', 'markers', 'genotypes', 'informativeness', 'features'):
+            (self.data_path / folder).mkdir(parents=True, exist_ok=True)
 
     def _prepare_samples(self):
         self._freq_query = ' %AF_'.join(['%POS'] + self.populations) + '\n'
@@ -133,10 +124,13 @@ class PartialInfoCalc(BaseAnalyser):
         return str(self.data_path / 'informativeness' / f'ALL.inf.part{part}.csv')
 
     def _markers_path(self, part):
-        return str(self.data_path / 'informativeness' / f'markers.part{part}.csv')
+        return str(self.data_path / 'markers' / f'ALL.markers.part{part}.csv')
+
+    def _features_path(self, part):
+        return str(self.data_path / 'features' / f'ALL.features.part{part}')
 
     def _sample_genotype_path(self, sample, part):
-        return str(self.data_path / 'genotypes' / f'{sample}.part{part}.vcf.gz')
+        return str(self.data_path / 'genotypes' / f'{sample}.genotype.part{part}')
 
     @property
     @lru_cache(1)
@@ -152,7 +146,7 @@ class PartialInfoCalc(BaseAnalyser):
 
     @run_time_logging
     def _calculate_frequency(self, part):
-        """Calculate frequencies for biallelic SNPs on the specified part of the genome."""
+        """Calculate frequencies for biallelic SNPs for the specified part of the genome."""
         cmd = f'tabix -h {self._chr_path} {self._query(part)} ' \
             f'| bcftools +fill-tags -Ou -- -S {self._groups_path} -t AF' \
             f'| bcftools query -f "{self._freq_query}" > {self._freq_path(part)}'
@@ -165,6 +159,7 @@ class PartialInfoCalc(BaseAnalyser):
 
     @run_time_logging
     def _calculate_informativeness(self, part):
+        """Calculate informativeness for assignment for each snp position."""
         freq_df = self.frequency(part)
         informativeness = {}
         for pop_left, pop_right in self.pairs:
@@ -181,6 +176,7 @@ class PartialInfoCalc(BaseAnalyser):
 
     @run_time_logging
     def _calculate_markers(self, part):
+        """Find best markers for each pair of populations."""
         inf_df = self.informativeness(part)
         with open(self._markers_path(part), 'w') as f:
             for pop_left, pop_right in self.pairs:
@@ -195,43 +191,17 @@ class PartialInfoCalc(BaseAnalyser):
             self._calculate_markers(part)
         return pd.read_csv(self._markers_path(part), header=None, index_col=0)
 
-    # def sample_genotype_array(self, sample, part):
-    #     """Get a genotype array for the specified individual"""
-    #     file = self._sample_genotype_path(sample, part)
-    #
-    #     if not self._check_local(file):
-    #         cmd = f'bcftools view -s {sample} -v snps -m2 -M2 -Oz -o {file} {self._chr_path} {self._query(part)}'
-    #         subprocess.call(cmd, shell=True, stdout=subprocess.PIPE)
-    #
-    #     gt = allel.read_vcf(file, fields=['GT', 'POS'])
-    #     return pd.Series(allel.GenotypeArray(gt['calldata/GT'])[:, 0], index=gt['variants/POS'])
-    #
-    # def closest_populations(self, sample, part, n=10):
-    #     """Return an ordered list of Populations from best to worst"""
-    #
-    #     if n >= len(self.populations):
-    #         logger.info(f'Closest populations for {sample}: {self.populations}')
-    #         return self.populations
-    #
-    #     freq = self.frequency(part)
-    #     freq[sample] = self.sample_genotype_array(sample, part)
-    #
-    #     likeliness = {pop: 0 for pop in self.populations}
-    #     for pos, row in freq.iterrows():
-    #         left, right = row[sample]
-    #         for pop in self.populations:
-    #             likeliness[pop] += row[pop] if left == 0 else 1 - row[pop]
-    #             likeliness[pop] += row[pop] if right == 0 else 1 - row[pop]
-    #
-    #     best = [k for k in sorted(likeliness, key=likeliness.get, reverse=True)]
-    #     logger.info(f'Closest populations for {sample}: {best[:n]}')
-    #     return best[:n]
-    #
-    # def real_population(self, sample):
-    #     """Return a real population for the specified individual"""
-    #     df = self.samples_df()
-    #     return df.loc[sample, 'pop']
-    #
+    def _calculate_genotype_array(self, sample, part):
+        cmd = f'bcftools view -s {sample} -Ou {self._chr_path} {self._query(part)} ' \
+            f'| bcftools query -f "%POS|[%GT]\n" > {self._sample_genotype_path(sample, part)}'
+        subprocess.call(cmd, shell=True, stdout=subprocess.PIPE)
+
+    def sample_genotype_array(self, sample, part):
+        if not self._check_local(self._sample_genotype_path(sample, part)):
+            self._calculate_genotype_array(sample, part)
+        return pd.read_csv(self._sample_genotype_path(sample, part), sep='|', index_col=0)
+
+
     # def generate_features_as_csv(self, part):
     #     t = time.monotonic()
     #     logger.info(f'Generating features. Start time {t}')
@@ -265,8 +235,36 @@ class PartialInfoCalc(BaseAnalyser):
     #             f.write(f'{sample} {real} {" ".join(populations)} {" ".join(scores)}\n')
 
 
+    # def closest_populations(self, sample, part, n=10):
+    #     """Return an ordered list of Populations from best to worst"""
+    #
+    #     if n >= len(self.populations):
+    #         logger.info(f'Closest populations for {sample}: {self.populations}')
+    #         return self.populations
+    #
+    #     freq = self.frequency(part)
+    #     freq[sample] = self.sample_genotype_array(sample, part)
+    #
+    #     likeliness = {pop: 0 for pop in self.populations}
+    #     for pos, row in freq.iterrows():
+    #         left, right = row[sample]
+    #         for pop in self.populations:
+    #             likeliness[pop] += row[pop] if left == 0 else 1 - row[pop]
+    #             likeliness[pop] += row[pop] if right == 0 else 1 - row[pop]
+    #
+    #     best = [k for k in sorted(likeliness, key=likeliness.get, reverse=True)]
+    #     logger.info(f'Closest populations for {sample}: {best[:n]}')
+    #     return best[:n]
+    #
+    # def real_population(self, sample):
+    #     """Return a real population for the specified individual"""
+    #     df = self.samples_df()
+    #     return df.loc[sample, 'pop']
+    #
+
+
 if __name__ == '__main__':
     pic = PartialInfoCalc(chromosome=18, recombination='recombination_spots_18.tsv',
                           n_markers=15, directory='chromosome18_data')
 
-    print(pic.markers(0))
+    print(pic.sample_genotype_array('HG00101', 1))

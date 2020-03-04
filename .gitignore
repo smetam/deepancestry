@@ -105,3 +105,4 @@ venv.bak/
 
 # massive data files
 /data
+/chromosome*
